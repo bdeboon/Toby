@@ -2,12 +2,14 @@
 
 #include "ros/ros.h"
 #include "std_msgs/String.h"
+#include "ros/time.h"
 
 
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <sensor_msgs/Imu.h>
+#include <std_msgs/Float64.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Vector3.h>
 #include <sstream>
@@ -17,13 +19,17 @@ using namespace message_filters;
 using namespace nav_msgs;
 using namespace geometry_msgs;
 
+sensor_msgs::Imu imu_measured;
+std_msgs::Float64 x_vel;
+geometry_msgs::Vector3 input_voltage;
 
-void callback(const sensor_msgs::Imu::ConstPtr& imu, const nav_msgs::Odometry::ConstPtr& odom)
+void imu_callback(const sensor_msgs::Imu &imu) 
 {
-  
-
-
-
+	imu_measured = imu;
+}
+void x_vel_callback(const std_msgs::Float64 &x_velocity) 
+{
+	x_vel = x_velocity;
 }
 
 int main(int argc, char **argv)
@@ -33,60 +39,42 @@ int main(int argc, char **argv)
 
   ros::NodeHandle nh;
 
-  /**
-   * The advertise() function is how you tell ROS that you want to
-   * publish on a given topic name. This invokes a call to the ROS
-   * master node, which keeps a registry of who is publishing and who
-   * is subscribing. After this advertise() call is made, the master
-   * node will notify anyone who is trying to subscribe to this topic name,
-   * and they will in turn negotiate a peer-to-peer connection with this
-   * node.  advertise() returns a Publisher object which allows you to
-   * publish messages on that topic through a call to publish().  Once
-   * all copies of the returned Publisher object are destroyed, the topic
-   * will be automatically unadvertised.
-   *
-   * The second parameter to advertise() is the size of the message queue
-   * used for publishing messages.  If messages are published more quickly
-   * than we can send them, the number here specifies how many messages to
-   * buffer up before throwing some away.
-   */
-  ros::Publisher motor = nh.advertise<geometry_msgs::Vector3>("motor_voltages", 1000);
-  
-  message_filters::Subscriber<sensor_msgs::Imu> imu_sub(nh, "imu", 1);
-  message_filters::Subscriber<nav_msgs::Odometry> odom_sub(nh, "odom", 1);
-  
-  typedef sync_policies::ApproximateTime<sensor_msgs::Imu, nav_msgs::Odometry> MySyncPolicy;
-  typedef Synchronizer<MySyncPolicy> Sync;
-  boost::shared_ptr<Sync> sync;
-  sync.reset(new Sync(MySyncPolicy(10), imu_sub, odom_sub));
+  ros::Publisher motor_pub = nh.advertise<geometry_msgs::Vector3>("motor_voltages", 1000);
+  ros::Subscriber imu_sub = nh.subscribe("imu", 1000, imu_callback);
+  ros::Subscriber x_vel_sub = nh.subscribe("linear_velocity", 1000, x_vel_callback);
 
-  //Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), imu_sub, odom_sub);
-  //sync.registerCallback(boost::bind(&callback, _1, _2));
-  
-  ros::Rate loop_rate(10);
-
+  ros::Rate loop_rate(100);
+  float K_LQR[2][5] = {
+-11.4214, -5.9419, 170.0483, 7.0711, 123.6416,
+-11.4214, -5.9419, 170.0483, -7.0711, -123.6416
+};
+  float Current_States[5][1] = {0,0,0,0,0};
+  float voltages[2][1] = {0,0};
   int count = 0;
+  int i;
+  int j;
+
   while (ros::ok())
   {
-    /**
-     * This is a message object. You stuff it with data, and then publish it.
-     */
-    //std_msgs::String msg;
+       
+	Current_States[1][1] = imu_measured.orientation.x;
+	Current_States[2][1] = imu_measured.angular_velocity.x;
+        Current_States[3][1] = x_vel.data;
+	Current_States[4][1] = imu_measured.orientation.z;
+	Current_States[5][1] = imu_measured.angular_velocity.z;
 
-    //std::stringstream ss;
-    //ss << "hello world " << count;
-    //msg.data = ss.str();
+	//Calculate values for input voltage using K_LQR
 
-    //ROS_INFO("%s", msg.data.c_str());
+	voltages[1][1] = (K_LQR[1][1]*Current_States[1][1]) + (K_LQR[1][2]*Current_States[2][1]) + (K_LQR[1][3]*Current_States[3][1]) + (K_LQR[1][4]*Current_States[4][1]) + (K_LQR[1][5]*Current_States[5][1]);
+	
+	voltages[2][1] = (K_LQR[2][1]*Current_States[1][1]) + (K_LQR[2][2]*Current_States[2][1]) + (K_LQR[2][3]*Current_States[3][1]) + (K_LQR[2][4]*Current_States[4][1]) + (K_LQR[2][5]*Current_States[5][1]);
+         
 
-    /**
-     * The publish() function is how you send messages. The parameter
-     * is the message object. The type of this object must agree with the type
-     * given as a template parameter to the advertise<>() call, as was done
-     * in the constructor above.
-     */
-    //chatter_pub.publish(msg);
-//
+	input_voltage.x = voltages[1][1];
+	input_voltage.y = voltages[2][1];
+
+	motor_pub.publish(input_voltage);
+
     ros::spinOnce();
 
     loop_rate.sleep();

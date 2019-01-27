@@ -14,18 +14,27 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 import rospy
+import base64
 
 # TODO: Replace with the serial port where your local module is connected to.
 
 # TODO: Replace with the baud rate of your local module.
 PORT = "/dev/ttyUSB0"
-BAUD_RATE = 9600
+BAUD_RATE = 115200
 
 from digi.xbee.devices import XBeeDevice
 from std_msgs.msg import String
 
-DATA_TO_SEND = "Data..."
+with open("test_image.jpg", "rb") as imageFile:
+    image_str = base64.b64encode(imageFile.read())
+    print(image_str)
+
+
+DATA_TO_SEND = "Sent_Data"
 REMOTE_NODE_ID = "REMOTE"
+
+MAX_DATA_RATE = 255
+
 
 
 def main():
@@ -34,26 +43,23 @@ def main():
     print(" +--------------------------------------+\n")
     pub = rospy.Publisher('chatter', String, queue_size=10) #
     rospy.init_node('talker', anonymous=True) #
-    rate = rospy.Rate(10) # 10hz
+    rate = rospy.Rate(1000) # 10hz
     device = XBeeDevice(PORT, BAUD_RATE)
-    try:
-        device.open()
-        while not rospy.is_shutdown(): #
-            hello_str = "hello world %s" % rospy.get_time() #
-            rospy.loginfo(hello_str) #
-            pub.publish(hello_str) #
-	    rate.sleep() #
-	    try:
-            	device.send_data_broadcast(DATA_TO_SEND)
-            	print("Success")
-	    except:
-		print("Could not send data")
-    except:
-	print("thanks")
+    counter = 0
+    device.open()
+    while not rospy.is_shutdown(): #
+        hello_str = "hello world %s" % rospy.get_time() #
+        rospy.loginfo(hello_str) #
+        pub.publish(hello_str) #
+        while (counter < len(image_str)) and ((len(image_str) - counter) > MAX_DATA_RATE):
+            device.send_data_broadcast(image_str[counter:(counter + MAX_DATA_RATE)])
+            counter = counter + MAX_DATA_RATE
+        print("Success")
+	rate.sleep() #
     device.close()
 
 
-    
+
 
     #try:
     #    device.open()

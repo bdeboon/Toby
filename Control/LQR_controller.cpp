@@ -9,7 +9,9 @@
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <sensor_msgs/Imu.h>
+#include <sensor_msgs/Joy.h>
 #include <std_msgs/Int16.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Vector3.h>
@@ -20,19 +22,19 @@ using namespace message_filters;
 
 
 //Initial Gains
-/*
+
 float K_LQR[2][5] = {
 -11.4214, -5.9419, 170.0483, 7.0711, 123.6416,
 -11.4214, -5.9419, 170.0483, -7.0711, -123.6416
 };
-*/
-//A Little more agressive
 
+//A Little more agressive
+/*
 float K_LQR[2][5] = {
 -12.3562, -6.4751, 169.7837, 22.3607, 125.2383,
 -12.3562, -6.4751, 169.7837, -22.3607, -125.2383,
 };
-
+*/
 
 
 //Most Aggressive
@@ -45,22 +47,26 @@ float K_LQR[2][5] = {
 
 
 float Current_States[5][1] = {0,0,0,0,0};
-float Desired_States[5][1] = {0,0,0,0,0};
+float Desired_States[5][1] = {0.008,0,0,0.70,0};
 float voltages[2][1] = {0,0};
 
 float x_vel = 0;
 float ang_vel_z = 0;
 float ang_vel_x = 0;
 float tilt = 0;
+float old_tilt = 0;
 float heading = 0;
-
+float old_heading = 0;
+float calibrate = 0;
+float ref = 0;
 
 geometry_msgs::Vector3 input_voltage;
 geometry_msgs::Vector3 kalman_states;
 geometry_msgs::Twist twist_msg;
 std_msgs::Int16 left_m;
 std_msgs::Int16 right_m;
-
+sensor_msgs::Joy joyy;
+std_msgs::Bool stop;
 
 void twist_callback(const geometry_msgs::Twist &twist)
 {
@@ -71,7 +77,14 @@ void twist_callback(const geometry_msgs::Twist &twist)
 void kalman_callback(const geometry_msgs::Vector3 &kf)
 {
 	tilt = kf.x;
-  heading = kf.y;
+	x_vel = kf.y;
+  heading = kf.z;
+
+}
+void joy_callback(const sensor_msgs::Joy &joyy)
+{
+	calibrate = joyy.axes[0];
+	ref += calibrate*0.001;
 }
 
 int main(int argc, char **argv)
@@ -100,8 +113,10 @@ int main(int argc, char **argv)
    */
    ros::Publisher left_motor_pub = nh.advertise<std_msgs::Int16>("left_motor", 1);
    ros::Publisher right_motor_pub = nh.advertise<std_msgs::Int16>("right_motor", 1);
+	 ros::Publisher stop_pub = nh.advertise<std_msgs::Bool>("stop", 1);
    ros::Subscriber kalman_sub = nh.subscribe("filtered_states", 1, kalman_callback);
    ros::Subscriber twist_sub = nh.subscribe("toby_velocity", 1, twist_callback);
+	 ros::Subscriber joy_sub = nh.subscribe("joy", 100, joy_callback);
 
 	/*
   message_filters::Subscriber<sensor_msgs::Imu> imu_sub(nh, "imu", 1);
@@ -115,13 +130,26 @@ int main(int argc, char **argv)
   //Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), imu_sub, odom_sub);
   //sync.registerCallback(boost::bind(&callback, _1, _2));
   */
-
+	stop.data = 1;
   ros::Rate loop_rate(100);
 
   int count = 0;
+	double t0 = ros::Time::now().toSec();
+	double t_now;
+	double run_time = 0;
+
+	while(run_time < 4) {
+		t_now = ros::Time::now().toSec();
+		run_time = t_now - t0;
+	}
 
   while (ros::ok())
   {
+	ang_vel_x = (tilt - old_tilt)/0.1;
+	ang_vel_z = (heading - old_heading)/0.1;
+	old_tilt = tilt;
+	old_heading = heading;
+
   //Fill up Current_States Matrix with Measurements
 	Current_States[0][0] = tilt;
 	Current_States[1][0] = ang_vel_x;
@@ -132,15 +160,20 @@ int main(int argc, char **argv)
 	//Calculate values for input voltage using K_LQR
 	//voltages[0][0] = (K_LQR[0][0]*(Desired_States[0][0] - Current_States[0][0])) + (K_LQR[0][1]*Current_States[1][0]) + (K_LQR[0][2]*Current_States[2][0]) + (K_LQR[0][3]*(Desired_States[3][0] - Current_States[3][0])) + (K_LQR[0][4]*Current_States[4][0]);
 	//voltages[1][0] = (K_LQR[1][0]*(Desired_States[0][0] - Current_States[0][0])) + (K_LQR[1][1]*Current_States[1][0]) + (K_LQR[1][2]*Current_States[2][0]) + (K_LQR[1][3]*(Desired_States[3][0] - Current_States[3][0])) + (K_LQR[1][4]*Current_States[4][0]);
-
-  //Heading Dont Care
+  Desired_States[0][0] = 0.008 - ref;
+	//Heading Dont Care
   voltages[0][0] = (4095/2)*(K_LQR[0][0]*(Desired_States[0][0] - Current_States[0][0])) + (K_LQR[0][1]*Current_States[1][0]) + (K_LQR[0][2]*Current_States[2][0]) + (K_LQR[0][3]*Current_States[3][0]) + (K_LQR[0][4]*Current_States[4][0]);
 	voltages[1][0] = (4095/2)*(K_LQR[1][0]*(Desired_States[0][0] - Current_States[0][0])) + (K_LQR[1][1]*Current_States[1][0]) + (K_LQR[1][2]*Current_States[2][0]) + (K_LQR[1][3]*Current_States[3][0]) + (K_LQR[1][4]*Current_States[4][0]);
 
-
+	if((abs(voltages[0][0]) > 3000) || (abs(voltages[1][0]) > 3000)) {
+		while(ros::ok()) {
+				stop_pub.publish(stop);
+			}
+		return 0;
+	}
   //Save voltages as rosmsg
-  left_m.data = (int) (voltages[0][0]); //calm down desired voltage a little (driver expects 4095 as max)
-  right_m.data = (int) (voltages[1][0]);
+  left_m.data = (int) (voltages[1][0]); //calm down desired voltage a little (driver expects 4095 as max)
+  right_m.data = (int) (voltages[0][0]); //SWAPPED MOTOR SIDES TO COMPENSATE FOR HEADING DIRECTION
 
   //Publish motor voltage data
 	left_motor_pub.publish(left_m);
